@@ -1,0 +1,25 @@
+                 User Message
+                       │
+                       ▼
+             Context Assembler
+                       │
+        ┌──────────────┴─────────────┐
+        │                            │
+ Conversation History        Retrieved Memories
+        │                            │
+        └──────────────┬─────────────┘
+                       │
+                 Token Budgeting
+                       │
+               Prompt Assembly
+                       │
+                      LLM
+                       │
+                 Assistant Reply
+                       │
+                       ▼
+              Memory Extraction
+                       │
+          Episodic / Semantic Memory
+                       │
+                 Memory Database

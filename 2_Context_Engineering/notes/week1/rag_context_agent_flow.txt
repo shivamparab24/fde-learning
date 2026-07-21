@@ -1,0 +1,30 @@
+                  ┌──────────────────┐
+                  │   User Prompt    │
+                  └────────┬─────────┘
+                           │
+                           ▼
+ ┌───────────────────────────────────────────────────┐
+ │                CONTEXT ENGINEERING                │
+ │   1. Pulls User ID / Session State                │
+ └─────────┬───────────────────────────────┬─────────┘
+           │                               │
+           ▼ (Read Memory)                 ▼ (Retrieve Knowledge)
+ ┌──────────────────┐             ┌──────────────────┐
+ │      MEMORY      │             │    RAG ENGINE    │
+ │ "User visited    │             │Search live flight│
+ │ Paris last month"│             │ schedules/prices │
+ └─────────┬────────┘             └────────┬─────────┘
+           │                               │
+           └───────────────┬───────────────┘
+                           │ (Assembles final optimized prompt)
+                           ▼
+ ┌───────────────────────────────────────────────────┐
+ │                     LLM BRAIN                     │
+ │   "Ah, Paris! Searching flights to CDG..."        │
+ └─────────────────────────┬─────────────────────────┘
+                           │
+                           ▼
+ ┌───────────────────────────────────────────────────┐
+ │                   AGENT ACTION                    │
+ │ Executes API call to flight booking system        │
+ └───────────────────────────────────────────────────┘

@@ -1,0 +1,46 @@
+              Window = 128K
+
+        Reserve Output = 4000
+                   │
+                   ▼
+          Input Budget = 124K
+                   │
+         ┌─────────┴─────────┐
+         │                   │
+    Add System Prompt        │
+         │                   │
+    Count Tokens             │
+         │                   │
+    Add Conversation         │
+         │                   │
+    Count Tokens             │
+         │                   │
+    Add RAG Docs             │
+         │                   │
+    Count Tokens             │
+         │                   │
+    Add User Query           │
+         │                   │
+     Exceeds Budget?
+         │
+   Yes ─────► Trim History / Docs
+         │
+         No
+         │
+      Send Request
+
+
+
+
+
+
+CONTEXT ASSEMBLER
+
+                 ┌─────────────┐
+System Prompt ─▶ │             │
+Conversation ──▶ │             │
+Memory ─────────▶│             │
+Retrieved Docs ─▶│             │──▶ LLM
+User Query ─────▶│             │
+Tool Results ───▶│             │
+                 └─────────────┘

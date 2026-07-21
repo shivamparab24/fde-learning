@@ -1,0 +1,14 @@
+Accuracy %
+  100% |  \       Needle is Easy to Find       /
+       |   \                                  /
+   80% |    \                                /
+       |     \                              /
+   60% |      \                            /
+       |       \                          /
+   40% |        \                        /
+       |         \                      /
+   20% |          \  LOST IN THE MIDDLE/ <-- Trough (Severe Degradation)
+       |           ___________________/
+    0% +------------------------------------------
+      0% (Start)        50% (Middle)       100% (End)
+                      Document Depth

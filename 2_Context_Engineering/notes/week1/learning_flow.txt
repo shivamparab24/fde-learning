@@ -1,0 +1,17 @@
+​Context Engineering
+│
+├── Prompt Engineering
+├── Context Window Management
+├── Conversation Management
+├── Memory Management
+│   ├── Short-term
+│   ├── Long-term
+│   ├── Episodic
+│   ├── Semantic
+│   └── Procedural
+├── Retrieval (RAG)
+├── State Management
+├── Multi-Agent Context
+├── Tool Context
+├── Context Compression
+├── Context Evaluation
