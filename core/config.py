@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     ollama_base_url: str
     ollama_model_name: str
     groq_api_key: str
+    groq_model_name: str
 
     model_config = SettingsConfigDict(
         env_file=".env"

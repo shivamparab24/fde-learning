@@ -1,0 +1,11 @@
+                  +--------------------------------+
+                  |         MemorySaver            |
+                  |  (In-Memory Key-Value Store)   |
+                  +---------------+----------------+
+                                  ^
+                                  | Read / Write
+                                  v
+[ User Input ] --->  langgraph.stream(..., config)  ---> [ Output Stream ]
+                                  ^
+                                  |
+               config = {"thread_id": "cli_session_1"}
