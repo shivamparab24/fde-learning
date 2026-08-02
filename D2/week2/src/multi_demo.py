@@ -86,38 +86,6 @@ builder.add_edge("assistant", END)
 conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
 graph = builder.compile(checkpointer=SqliteSaver(conn))
 
-# def main():
-#     global SYSTEM_PROMPT
-
-#     print("=" * 50)
-#     user_sys_prompt = input("Enter System Prompt (or press ENTER for default): ").strip()
-#     base_prompt = user_sys_prompt or "You are a helpful technical assistant."
-    
-#     # Large static context padding forces KV cache hit in Ollama
-#     static_context = "".join(f"\n- Knowledge Base Guideline #{i}: Fast local execution context." for i in range(100))
-#     SYSTEM_PROMPT = base_prompt + "\n" + static_context
-#     print("=" * 50)
-
-#     session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-#     config = {"configurable": {"thread_id": session_id}}
-#     print(f"Active Thread ID: {session_id}")
-    
-#     turn = 1
-#     while True:
-#         user_input = input(f"\n[Turn {turn}] You: ").strip()
-#         if not user_input:
-#             continue
-#         if user_input.lower() in ["exit", "quit", "q"]:
-#             break
-
-#         graph.invoke({"messages": [HumanMessage(content=user_input)]}, config=config)
-#         turn += 1
-
-#     print("\nGoodbye!")
-
-# if __name__ == "__main__":
-#     main()
-
 
 def list_existing_sessions(conn: sqlite3.Connection) -> list[str]:
     """Helper to fetch all saved thread_ids from the SQLite database."""

@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Context Chat UI</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #111827;
+      color: #f9fafb;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      height: 100vh;
+    }
+
+    .sidebar {
+      background: #1f2937;
+      padding: 16px;
+      border-right: 1px solid #374151;
+      overflow-y: auto;
+      max-height: 100vh;
+    }
+
+    .main {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      height: 100vh;
+    }
+
+    input,
+    textarea,
+    button {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #6b7280;
+      box-sizing: border-box;
+      margin-top: 6px;
+    }
+
+    button {
+      background: #2563eb;
+      color: white;
+      cursor: pointer;
+    }
+
+    .secondary {
+      background: #4b5563;
+    }
+
+    .danger {
+      background: #dc2626;
+    }
+
+    .chat {
+      flex: 1;
+      min-height: 300px;
+      overflow-y: auto;
+      background: #1f2937;
+      border: 1px solid #374151;
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .msg {
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      max-width: 85%;
+      white-space: pre-wrap;
+    }
+
+    .msg.user {
+      background: #2563eb;
+      margin-left: auto;
+    }
+
+    .msg.assistant {
+      background: #374151;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .small {
+      font-size: 0.9rem;
+      color: #cbd5e1;
+    }
+
+    ul {
+      padding-left: 0;
+      list-style: none;
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    .session-btn {
+      width: 100%;
+      text-align: left;
+      background: #374151;
+    }
+
+    .session-btn.active {
+      background: #2563eb;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <h2>Context Chat</h2>
+
+      <div>
+        <label>Profile ID</label>
+        <input id="profileId" placeholder="Enter profile ID" />
+        <button onclick="signIn()">Sign in</button>
+      </div>
+
+      <hr />
+
+      <div id="sessionArea" class="hidden">
+        <h3>Sessions</h3>
+        <button class="secondary" onclick="showNewSessionForm()">New session</button>
+        <ul id="sessionList"></ul>
+      </div>
+
+      <div id="newSessionArea" class="hidden">
+        <label>Session ID</label>
+        <input id="newSessionId" placeholder="new session id" />
+        <label>System Prompt</label>
+        <textarea id="systemPrompt" rows="4" placeholder="Enter system prompt"></textarea>
+        <button onclick="createNewSession()">Start session</button>
+      </div>
+
+      <div id="purgeArea" class="hidden">
+        <button class="danger" onclick="purgeCurrentSession()">Purge current session</button>
+        <button class="danger" onclick="purgeProfile()">Purge profile</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div id="status" class="small">Sign in to continue.</div>
+      <div id="chat" class="chat"></div>
+      <div id="composer" class="hidden">
+        <textarea id="userInput" rows="4" placeholder="Type your message"></textarea>
+        <button onclick="sendMessage()">Send</button>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      profileId: null,
+      sessions: [],
+      selectedSession: null,
+      systemPrompt: "You are a concise engineering assistant.",
+      messages: []
+    };
+
+    function setStatus(text) {
+      document.getElementById("status").textContent = text;
+    }
+
+    function show(id, visible) {
+      document.getElementById(id).classList.toggle("hidden", !visible);
+    }
+
+    function renderSessions() {
+      const list = document.getElementById("sessionList");
+      list.innerHTML = "";
+      state.sessions.forEach((s) => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.className = "session-btn" + (s === state.selectedSession ? " active" : "");
+        btn.textContent = s;
+        btn.onclick = () => loadSession(s);
+        li.appendChild(btn);
+        list.appendChild(li);
+      });
+    }
+
+    function renderMessages() {
+      const chat = document.getElementById("chat");
+      chat.innerHTML = "";
+      state.messages.forEach((msg) => {
+        const div = document.createElement("div");
+        div.className = "msg " + (msg.role === "user" ? "user" : "assistant");
+        div.textContent = msg.content;
+        chat.appendChild(div);
+      });
+      // Auto-scroll to bottom
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function signIn() {
+      const profileId = document.getElementById("profileId").value.trim();
+      if (!profileId) {
+        setStatus("Please enter a profile ID.");
+        return;
+      }
+
+      state.profileId = profileId;
+      state.selectedSession = null;
+      state.messages = [];
+      renderMessages();
+      show("sessionArea", true);
+      show("composer", false);
+      show("purgeArea", true);
+      setStatus("Signed in. Loading sessions...");
+      await loadSessions();
+    }
+
+    async function loadSessions() {
+      if (!state.profileId) return;
+      const res = await fetch(`/sessions/${encodeURIComponent(state.profileId)}`);
+      const data = await res.json();
+      state.sessions = data.sessions || [];
+      renderSessions();
+      if (state.sessions.length === 0) {
+        setStatus("No sessions yet. Create one to start chatting.");
+      } else {
+        setStatus(`Loaded ${state.sessions.length} session(s).`);
+      }
+    }
+
+    function showNewSessionForm() {
+      show("newSessionArea", true);
+      document.getElementById("newSessionId").focus();
+    }
+
+    async function createNewSession() {
+      const sessionId = document.getElementById("newSessionId").value.trim();
+      const systemPrompt = document.getElementById("systemPrompt").value.trim();
+      if (!sessionId) {
+        setStatus("Please enter a session ID.");
+        return;
+      }
+      if (!systemPrompt) {
+        setStatus("Please enter a system prompt.");
+        return;
+      }
+
+      state.selectedSession = sessionId;
+      state.systemPrompt = systemPrompt;
+      state.messages = [];
+      renderMessages();
+      show("newSessionArea", false);
+      show("composer", true);
+      if (!state.sessions.includes(sessionId)) {
+        state.sessions = [sessionId, ...state.sessions];
+        renderSessions();
+      }
+      setStatus(`New session ready: ${sessionId}`);
+    }
+
+    async function loadSession(sessionId) {
+      state.selectedSession = sessionId;
+      state.messages = [];
+      renderMessages();
+      show("composer", true);
+      setStatus(`Loading ${sessionId}...`);
+
+      const res = await fetch(`/chat/history/${encodeURIComponent(state.profileId)}/${encodeURIComponent(sessionId)}`);
+      const data = await res.json();
+      state.messages = data.history || [];
+      renderMessages();
+      setStatus(`Loaded session ${sessionId}`);
+    }
+
+    async function sendMessage() {
+      if (!state.profileId || !state.selectedSession) {
+        setStatus("Please sign in and choose or create a session first.");
+        return;
+      }
+
+      const text = document.getElementById("userInput").value.trim();
+      if (!text) return;
+
+      const payload = {
+        person_id: state.profileId,
+        session_id: state.selectedSession,
+        system_prompt: state.systemPrompt,
+        user_query: text,
+        retrieved_docs: []
+      };
+
+      setStatus("Sending...");
+      const res = await fetch("/chat/invoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+
+      state.messages.push({ role: "user", content: text });
+      state.messages.push({ role: "assistant", content: data.response || "" });
+      renderMessages();
+      document.getElementById("userInput").value = "";
+      setStatus(`Sent to ${state.selectedSession}`);
+    }
+
+    async function purgeCurrentSession() {
+      if (!state.profileId || !state.selectedSession) {
+        setStatus("Select a session to purge.");
+        return;
+      }
+
+      const res = await fetch(`/session/${encodeURIComponent(state.profileId)}/${encodeURIComponent(state.selectedSession)}`, {
+        method: "DELETE"
+      });
+
+      if (res.ok) {
+        state.sessions = state.sessions.filter((s) => s !== state.selectedSession);
+        state.selectedSession = null;
+        state.messages = [];
+        renderMessages();
+        renderSessions();
+        show("composer", false);
+        setStatus("Current session purged.");
+      } else {
+        setStatus("Failed to purge session.");
+      }
+    }
+
+    async function purgeProfile() {
+      if (!state.profileId) return;
+      const res = await fetch(`/person/${encodeURIComponent(state.profileId)}`, {
+        method: "DELETE"
+      });
+
+      if (res.ok) {
+        state.sessions = [];
+        state.selectedSession = null;
+        state.messages = [];
+        renderMessages();
+        renderSessions();
+        show("composer", false);
+        setStatus(`Profile ${state.profileId} purged.`);
+      } else {
+        setStatus("Failed to purge profile.");
+      }
+    }
+  </script>
+</body>
+
+</html>

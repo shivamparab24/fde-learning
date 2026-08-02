@@ -1,6 +1,5 @@
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -10,6 +9,13 @@ class Settings(BaseSettings):
     ollama_model_name: str
     groq_api_key: str
     groq_model_name: str
+
+    database_url: str
+    postgres_host: str
+    postgres_port: str
+    postgres_db: str
+    postgres_user: str
+    postgres_password: str
 
     model_config = SettingsConfigDict(
         env_file=".env"
