@@ -205,6 +205,47 @@
       chat.scrollTop = chat.scrollHeight;
     }
 
+    async function saveProfile() {
+      if (!state.profileId) return;
+
+      try {
+        await fetch(`/profiles/${encodeURIComponent(state.profileId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profile_data: {
+              profile_id: state.profileId,
+              source: "ui"
+            }
+          })
+        });
+      } catch (err) {
+        console.warn("Profile save failed:", err);
+      }
+    }
+
+    async function saveMemory(content) {
+      if (!state.profileId || !state.selectedSession) return;
+
+      try {
+        await fetch(`/memories/${encodeURIComponent(state.profileId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content,
+            memory_type: "chat",
+            metadata: {
+              session_id: state.selectedSession,
+              source: "ui"
+            }
+          })
+        });
+      } catch (err) {
+        console.warn("Memory save failed:", err);
+      }
+    }
+
+
     async function signIn() {
       const profileId = document.getElementById("profileId").value.trim();
       if (!profileId) {
@@ -220,6 +261,7 @@
       show("composer", false);
       show("purgeArea", true);
       setStatus("Signed in. Loading sessions...");
+      await saveProfile();
       await loadSessions();
     }
 
@@ -298,12 +340,13 @@
       };
 
       setStatus("Sending...");
-      const res = await fetch("/chat/invoke", {
+      const res = await fetch("/invoke", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       const data = await res.json();
+      await saveMemory(text);
 
       state.messages.push({ role: "user", content: text });
       state.messages.push({ role: "assistant", content: data.response || "" });

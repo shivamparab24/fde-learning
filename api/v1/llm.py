@@ -19,5 +19,4 @@ def get_llm():
         temperature=0.7,
     )
 
-
     return _llm

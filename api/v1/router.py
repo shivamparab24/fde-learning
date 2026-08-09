@@ -1,10 +1,37 @@
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 from langchain_core.messages import HumanMessage, AIMessage
 
-from api.v1.schema import ChatRequest, ChatResponse
-from api.v1.db import db_get_all_threads, db_delete_thread, db_get_chat_history
+from api.v1.db import (
+    db_get_all_threads,
+    db_get_chat_history,
+    db_upsert_profile,
+    db_add_memory,
+    db_delete_session,
+    db_delete_person,
+)
 from api.v1.engine import get_graph, make_thread_id
-from api.v1.services import process_chat_turn
+from api.v1.schema import (
+    ChatRequest,
+    ChatResponse,
+    ContextBuildRequest,
+    ConversationTurnStoreRequest,
+    InvokeRequest,
+    InvokeResponse,
+    MemoryCreateRequest,
+    ProfileUpsertRequest,
+    PromptBuildRequest,
+)
+from api.v1.services import (
+    invoke_context_engineering,
+    process_chat_turn,
+    get_profile,
+    get_relevant_memories,
+    build_context,
+    build_prompt,
+    store_conversation_turn,
+)
 
 router = APIRouter(tags=["Context Chat & State Management"])
 
@@ -26,11 +53,63 @@ def invoke_chat(req: ChatRequest):
         telemetry=telemetry
     )
 
+
+@router.get("/profiles/{person_id}", summary="Get a customer profile")
+def get_profile_endpoint(person_id: str):
+    profile = get_profile(person_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found.")
+    return {"person_id": person_id, "profile": profile}
+
+
+@router.post("/profiles/{person_id}", summary="Create or update a customer profile")
+def upsert_profile_endpoint(person_id: str, payload: ProfileUpsertRequest):
+    profile = db_upsert_profile(person_id, payload.profile_data)
+    return {"person_id": person_id, "profile": profile}
+
+
+@router.post("/memories/{person_id}", summary="Store a new memory for a person")
+def create_memory_endpoint(person_id: str, payload: MemoryCreateRequest):
+    db_add_memory(person_id, payload.content, payload.memory_type, payload.metadata)
+    return {"person_id": person_id, "status": "stored"}
+
+
+@router.get("/memories/{person_id}", summary="Get relevant memories for a person")
+def get_memories_endpoint(person_id: str, query: Optional[str] = None, limit: int = 5):
+    memories = get_relevant_memories(person_id, query=query, limit=limit)
+    return {"person_id": person_id, "query": query, "memories": memories}
+
+
+@router.post("/context/build", summary="Build a reusable context object")
+def build_context_endpoint(req: ContextBuildRequest):
+    context = build_context(
+        person_id=req.person_id,
+        session_id=req.session_id,
+        system_prompt=req.system_prompt,
+        user_query=req.user_query,
+        retrieved_docs=req.retrieved_docs or [],
+        memories=req.memories,
+    )
+    return {"person_id": req.person_id, "session_id": req.session_id, "context": context}
+
+
+@router.post("/prompt/build", summary="Build a prompt from context")
+def build_prompt_endpoint(req: PromptBuildRequest):
+    return {"prompt": build_prompt(req.context)}
+
+
+@router.post("/conversation-turns", summary="Store a conversation turn explicitly")
+def store_conversation_turn_endpoint(req: ConversationTurnStoreRequest):
+    result = store_conversation_turn(req.person_id, req.session_id, req.user_query, req.ai_response)
+    return result
+
+
 @router.get("/persons", summary="Fetch list of unique person IDs with saved history")
 def get_persons():
     threads = db_get_all_threads()
     persons = list(set(t.split("::")[0] for t in threads if "::" in t))
     return {"persons": persons}
+
 
 @router.get("/sessions/{person_id}", summary="Fetch active session IDs for a person_id")
 def get_sessions(person_id: str):
@@ -38,22 +117,6 @@ def get_sessions(person_id: str):
     sessions = [t.split("::")[1] for t in threads if t.startswith(f"{person_id}::")]
     return {"person_id": person_id, "sessions": sessions}
 
-# @router.get("/chat/history/{person_id}/{session_id}", summary="Retrieve conversation history")
-# def get_chat_history(person_id: str, session_id: str):
-#     thread_id = make_thread_id(person_id, session_id)
-#     config = {"configurable": {"thread_id": thread_id}}
-    
-#     current_state = graph.get_state(config)
-#     messages = current_state.values.get("messages", []) if current_state else []
-    
-#     formatted_history = []
-#     for msg in messages:
-#         if isinstance(msg, HumanMessage):
-#             formatted_history.append({"role": "user", "content": msg.content})
-#         elif isinstance(msg, AIMessage):
-#             formatted_history.append({"role": "assistant", "content": msg.content})
-            
-#     return {"person_id": person_id, "session_id": session_id, "history": formatted_history}
 
 @router.get("/chat/history/{person_id}/{session_id}")
 def get_chat_history(person_id: str, session_id: str):
@@ -83,15 +146,27 @@ def get_chat_history(person_id: str, session_id: str):
 
 @router.delete("/session/{person_id}/{session_id}", summary="Delete a specific session")
 def delete_session(person_id: str, session_id: str):
-    thread_id = make_thread_id(person_id, session_id)
-    deleted_count = db_delete_thread(thread_id)
+    deleted_count = db_delete_session(person_id, session_id)
     if deleted_count == 0:
         raise HTTPException(status_code=404, detail="Session ID not found.")
     return {"status": "deleted", "deleted_rows": deleted_count}
 
+
 @router.delete("/person/{person_id}", summary="Delete all records for a person_id")
 def delete_person(person_id: str):
-    deleted_count = db_delete_thread(f"{person_id}::")
+    deleted_count = db_delete_person(person_id)
     if deleted_count == 0:
         raise HTTPException(status_code=404, detail="Person ID not found.")
     return {"status": "deleted", "deleted_rows": deleted_count}
+
+
+@router.post("/invoke", response_model=InvokeResponse, summary="Single entrypoint for context-engineered chat")
+def invoke_context_engineering_endpoint(req: InvokeRequest):
+    result = invoke_context_engineering(
+        person_id=req.person_id,
+        session_id=req.session_id,
+        system_prompt=req.system_prompt,
+        user_query=req.user_query,
+        retrieved_docs=req.retrieved_docs,
+    )
+    return result

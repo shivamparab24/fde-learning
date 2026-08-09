@@ -35,6 +35,8 @@ def _build_graph(settings):
 
 def summarize_trimmed_turns(existing_summary: str, trimmed_turns: list) -> str:
     """Summarizes older/trimmed conversation turns into a single updated summary string."""
+
+    # print(f"[Summary] generating rolling summary from {len(trimmed_turns)} trimmed turns")
     if not trimmed_turns:
         return existing_summary
 
@@ -58,7 +60,9 @@ def summarize_trimmed_turns(existing_summary: str, trimmed_turns: list) -> str:
         from langchain_core.messages import HumanMessage
 
         response = llm.invoke([HumanMessage(content=prompt)])
-        return response.content.strip()
+        summary_text = response.content.strip()
+        print(f"[Summary] rolling summary generated: {len(summary_text)} chars")
+        return summary_text
     except Exception as e:
         print(f"Error generating running summary: {e}")
         return existing_summary
