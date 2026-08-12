@@ -12,8 +12,13 @@ from api.v1.db import (
     db_add_memory,
 )
 from api.v1.engine import get_graph, make_thread_id, summarize_trimmed_turns
+from api.v1.memory_service import LANGMEM_AVAILABLE, get_langmem_manager
+from api.v1.prompt import DEFAULT_AMAZON_SYSTEM_PROMPT
+from core.config import get_settings
 
-assembler = ContextAssembler(max_total_tokens=4096, reserve_output_tokens=512)
+settings = get_settings()
+
+assembler = ContextAssembler(max_total_tokens=settings.token_budget, reserve_output_tokens=settings.reserve_output_tokens)
 
 
 def get_profile(person_id: str) -> Dict[str, Any]:
@@ -21,7 +26,24 @@ def get_profile(person_id: str) -> Dict[str, Any]:
 
 
 def get_relevant_memories(person_id: str, query: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
+    if LANGMEM_AVAILABLE and query:
+        langmem = get_langmem_manager()
+        memories = langmem.search_memories(person_id=person_id, query=query, limit=limit)
+        if memories:
+            return memories
     return db_get_memories(person_id, query=query, limit=limit)
+
+
+def store_conversation_turn(person_id: str, session_id: str, user_query: str, ai_response: str):
+    db_append_chat_turn(person_id, session_id, user_query, ai_response)
+    if LANGMEM_AVAILABLE:
+        langmem = get_langmem_manager()
+        messages = [
+            {"role": "user", "content": user_query},
+            {"role": "assistant", "content": ai_response}
+        ]
+        langmem.add_memory(person_id=person_id, messages=messages, metadata={"session_id": session_id})
+    return {"status": "stored"}
 
 
 def build_context(
@@ -45,7 +67,7 @@ def build_context(
         "memories": memory_items,
         "retrieved_docs": retrieved_docs or [],
         "user_query": user_query,
-        "system_prompt": system_prompt or "You are a helpful assistant.",
+        "system_prompt": system_prompt.strip() if system_prompt and system_prompt.strip() else DEFAULT_AMAZON_SYSTEM_PROMPT,
     }
 
 
@@ -55,7 +77,7 @@ def build_prompt(context: Dict[str, Any]) -> str:
     memories = context.get("memories") or []
     retrieved_docs = context.get("retrieved_docs") or []
     user_query = context.get("user_query", "")
-    system_prompt = context.get("system_prompt", "You are a helpful assistant.")
+    system_prompt = context.get("system_prompt", DEFAULT_AMAZON_SYSTEM_PROMPT)
 
     profile_block = json.dumps(profile, indent=2, ensure_ascii=False) if profile else "No profile available."
     history_block = "\n".join(
@@ -78,18 +100,14 @@ def build_prompt(context: Dict[str, Any]) -> str:
     )
 
 
-def store_conversation_turn(person_id: str, session_id: str, user_query: str, ai_response: str):
-    db_append_chat_turn(person_id, session_id, user_query, ai_response)
-    return {"status": "stored"}
-
-
 def process_chat_turn(
     person_id: str,
     session_id: str,
     system_prompt: str,
     user_query: str,
-    retrieved_docs: list
-) -> tuple[str, dict]:
+    retrieved_docs: list,
+    memories: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[str, dict, Dict[str, Any], str]:
     """Handles context assembly with running summary and executes graph turns."""
     thread_id = make_thread_id(person_id, session_id)
     config = {"configurable": {"thread_id": thread_id}}
@@ -113,7 +131,7 @@ def process_chat_turn(
         system_prompt=system_prompt,
         user_query=user_query,
         retrieved_docs=retrieved_docs or [],
-        memories=get_relevant_memories(person_id, query=user_query),
+        memories=memories,
     )
 
     prompt_text = build_prompt(context)
@@ -156,7 +174,7 @@ def process_chat_turn(
 
     store_conversation_turn(person_id, session_id, user_query, latest_msg)
 
-    return latest_msg, telemetry
+    return latest_msg, telemetry, context, prompt_text
 
 
 def invoke_context_engineering(
@@ -166,22 +184,7 @@ def invoke_context_engineering(
     user_query: str,
     retrieved_docs: Optional[list] = None,
 ) -> Dict[str, Any]:
-    profile = get_profile(person_id)
-    history = db_get_chat_history(person_id, session_id)
-    memories = get_relevant_memories(person_id, query=user_query)
-
-    context = build_context(
-        person_id=person_id,
-        session_id=session_id,
-        system_prompt=system_prompt,
-        user_query=user_query,
-        retrieved_docs=retrieved_docs or [],
-        memories=memories,
-    )
-
-    prompt = build_prompt(context)
-
-    response_text, telemetry = process_chat_turn(
+    response_text, telemetry, context, prompt = process_chat_turn(
         person_id=person_id,
         session_id=session_id,
         system_prompt=system_prompt or "You are a helpful assistant.",
@@ -192,9 +195,9 @@ def invoke_context_engineering(
     return {
         "person_id": person_id,
         "session_id": session_id,
-        "profile": profile,
-        "history": history,
-        "memories": memories,
+        "profile": context.get("profile", {}),
+        "history": context.get("history", []),
+        "memories": context.get("memories", []),
         "context": context,
         "prompt": prompt,
         "response": response_text,

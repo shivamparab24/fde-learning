@@ -4,27 +4,38 @@ from typing import List, Dict, Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.sql import SQL, Identifier
+from psycopg_pool import ConnectionPool
 
 from core.config import get_settings
 settings = get_settings()
 
+# initialize pool
+conn_params = {
+    "host": settings.postgres_host,
+    "port": int(settings.postgres_port),
+    "dbname": settings.postgres_db,
+    "user": settings.postgres_user,
+    "password": settings.postgres_password,
+    "row_factory": dict_row,
+}
+
+pool = ConnectionPool(
+    min_size=4,
+    max_size=20,
+    kwargs=conn_params,
+    open=True,
+)
 
 def _get_conn():
-    conn_params = {
-        "host": settings.postgres_host,
-        "port": int(settings.postgres_port),
-        "dbname": settings.postgres_db,
-        "user": settings.postgres_user,
-        "password": settings.postgres_password,
-        "row_factory": dict_row,
-    }
-    return psycopg.connect(**conn_params, autocommit=True)
+    return pool.connection()
 
 
 def _ensure_chat_history_table(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_history (
-            id UUID PRIMARY KEY,
+            seq BIGSERIAL PRIMARY KEY,
+            id UUID UNIQUE NOT NULL,
             person_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
             role TEXT NOT NULL,
@@ -32,7 +43,6 @@ def _ensure_chat_history_table(conn):
             timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );
     """)
-    conn.commit()
 
 
 def _ensure_profile_table(conn):
@@ -44,7 +54,6 @@ def _ensure_profile_table(conn):
             updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );
     """)
-    conn.commit()
 
 
 def _ensure_memory_table(conn):
@@ -58,25 +67,33 @@ def _ensure_memory_table(conn):
             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );
     """)
-    conn.commit()
 
 
 def db_get_all_threads() -> List[str]:
     try:
         with _get_conn() as conn:
+            # Ensure required schema elements exist before querying
+            _ensure_checkpoint_schema(conn)
             _ensure_chat_history_table(conn)
 
             with conn.cursor() as cursor:
                 threads = set()
 
+                # Guard check: query checkpoints only if table actually exists
                 cursor.execute("""
-                    SELECT DISTINCT thread_id
-                    FROM checkpoints
-                    WHERE thread_id IS NOT NULL;
+                    SELECT 1 
+                    FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = 'checkpoints';
                 """)
-                for row in cursor.fetchall():
-                    if row["thread_id"]:
-                        threads.add(row["thread_id"])
+                if cursor.fetchone():
+                    cursor.execute("""
+                        SELECT DISTINCT thread_id
+                        FROM checkpoints
+                        WHERE thread_id IS NOT NULL;
+                    """)
+                    for row in cursor.fetchall():
+                        if row["thread_id"]:
+                            threads.add(row["thread_id"])
 
                 cursor.execute("""
                     SELECT DISTINCT person_id, session_id
@@ -105,20 +122,21 @@ def db_delete_thread(thread_id_pattern: str, prefix: bool = False, exact: bool =
 
             for table in tables:
                 if exact:
-                    cursor.execute(
-                        f'DELETE FROM public."{table}" WHERE thread_id = %s',
-                        (thread_id_pattern,),
-                    )
+                    operator = SQL("=")
+                    pattern = thread_id_pattern
                 elif prefix:
-                    cursor.execute(
-                        f'DELETE FROM public."{table}" WHERE thread_id LIKE %s',
-                        (f"{thread_id_pattern}%",),
-                    )
+                    operator = SQL("LIKE")
+                    pattern = f"{thread_id_pattern}%"
                 else:
-                    cursor.execute(
-                        f'DELETE FROM public."{table}" WHERE thread_id LIKE %s',
-                        (f"%{thread_id_pattern}%",),
-                    )
+                    operator = SQL("LIKE")
+                    pattern = f"%{thread_id_pattern}%"
+
+                query = SQL("DELETE FROM public.{} WHERE thread_id {} %s").format(
+                    Identifier(table),
+                    operator
+                )
+
+                cursor.execute(query, (pattern,))
                 deleted_rows += cursor.rowcount
         conn.commit()
     return deleted_rows
@@ -150,10 +168,10 @@ def db_delete_session(person_id: str, session_id: str) -> int:
             tables = [row["table_name"] for row in cursor.fetchall()]
 
             for table in tables:
-                cursor.execute(
-                    f'DELETE FROM public."{table}" WHERE thread_id = %s',
-                    (thread_id,),
+                query = SQL("DELETE FROM public.{} WHERE thread_id = %s").format(
+                    Identifier(table)
                 )
+                cursor.execute(query, (thread_id,))
                 deleted_rows += cursor.rowcount
 
         conn.commit()
@@ -207,10 +225,10 @@ def db_delete_person(person_id: str) -> int:
             tables = [row["table_name"] for row in cursor.fetchall()]
 
             for table in tables:
-                cursor.execute(
-                    f'DELETE FROM public."{table}" WHERE thread_id LIKE %s',
-                    (f"{prefix}%",),
+                query = SQL("DELETE FROM public.{} WHERE thread_id LIKE %s").format(
+                    Identifier(table)
                 )
+                cursor.execute(query, (f"{prefix}%",))
                 deleted_rows += cursor.rowcount
 
         conn.commit()
@@ -248,7 +266,7 @@ def db_get_chat_history(person_id: str, session_id: str) -> List[Dict[str, str]]
                 SELECT role, content
                 FROM chat_history
                 WHERE person_id = %s AND session_id = %s
-                ORDER BY timestamp ASC, id ASC;
+                ORDER BY seq ASC;
                 """,
                 (person_id, session_id),
             )

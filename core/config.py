@@ -7,8 +7,12 @@ class Settings(BaseSettings):
     #environment variables
     ollama_base_url: str
     ollama_model_name: str
+
     groq_api_key: str
     groq_model_name: str
+
+    token_budget: int
+    reserve_output_tokens: int
 
     database_url: str
     postgres_host: str

@@ -140,8 +140,8 @@
       <div id="newSessionArea" class="hidden">
         <label>Session ID</label>
         <input id="newSessionId" placeholder="new session id" />
-        <label>System Prompt</label>
-        <textarea id="systemPrompt" rows="4" placeholder="Enter system prompt"></textarea>
+        <label>System Prompt (Optional)</label>
+        <textarea id="systemPrompt" rows="4" placeholder="Enter system prompt or leave blank for default Amazon Support agent"></textarea>
         <button onclick="createNewSession()">Start session</button>
       </div>
 
@@ -162,11 +162,13 @@
   </div>
 
   <script>
+    const DEFAULT_AMAZON_SYSTEM_PROMPT = `You are "Amzy", an official Amazon Customer Support & Ticket Resolution AI Agent. Your goal is to resolve customer inquiries regarding orders, refunds, returns, shipping delays, and technical support empathetically, concisely, and accurately. Always check provided customer profiles and past interaction memories.`;
+
     const state = {
       profileId: null,
       sessions: [],
       selectedSession: null,
-      systemPrompt: "You are a concise engineering assistant.",
+      systemPrompt: DEFAULT_AMAZON_SYSTEM_PROMPT,
       messages: []
     };
 
@@ -245,7 +247,6 @@
       }
     }
 
-
     async function signIn() {
       const profileId = document.getElementById("profileId").value.trim();
       if (!profileId) {
@@ -285,13 +286,13 @@
 
     async function createNewSession() {
       const sessionId = document.getElementById("newSessionId").value.trim();
-      const systemPrompt = document.getElementById("systemPrompt").value.trim();
+      const systemPromptElem = document.getElementById("systemPrompt");
+      const systemPromptValue = systemPromptElem ? systemPromptElem.value.trim() : "";
+      
+      const systemPrompt = systemPromptValue ? systemPromptValue : DEFAULT_AMAZON_SYSTEM_PROMPT;
+
       if (!sessionId) {
         setStatus("Please enter a session ID.");
-        return;
-      }
-      if (!systemPrompt) {
-        setStatus("Please enter a system prompt.");
         return;
       }
 

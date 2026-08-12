@@ -4,11 +4,13 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 from pydantic import BaseModel, Field
 
+from api.v1.prompt import DEFAULT_AMAZON_SYSTEM_PROMPT
+
 
 class ChatRequest(BaseModel):
     person_id: str
     session_id: str
-    system_prompt: Optional[str]
+    system_prompt: Optional[str] = Field(default=DEFAULT_AMAZON_SYSTEM_PROMPT)
     user_query: str
     retrieved_docs: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
 
@@ -58,7 +60,7 @@ class ConversationTurnStoreRequest(BaseModel):
 class InvokeRequest(BaseModel):
     person_id: str
     session_id: str
-    system_prompt: Optional[str] = None
+    system_prompt: Optional[str] = Field(default=DEFAULT_AMAZON_SYSTEM_PROMPT)
     user_query: str
     retrieved_docs: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
 
