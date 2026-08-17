@@ -2,7 +2,7 @@ import os
 from typing import Any, Dict, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage
 from core.config import get_settings
-from api.v1.llm import get_llm
+from api.v1.agent.llm import get_llm
 
 settings = get_settings()
 

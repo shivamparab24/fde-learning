@@ -4,9 +4,9 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.postgres import PostgresSaver
 from langchain_core.messages import HumanMessage
 
-from api.v1.llm import get_llm
-from api.v1.db import _ensure_checkpoint_schema, _get_conn
-from api.v1.schema import GraphState
+from api.v1.agent.llm import get_llm
+from api.v1.db.db import _ensure_checkpoint_schema, _get_conn
+from api.v1.schema.schema import GraphState
 from core.config import get_settings
 
 settings = get_settings()

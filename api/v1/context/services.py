@@ -3,17 +3,17 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from api.v1.context_assembler import ContextAssembler
-from api.v1.db import (
+from api.v1.context.context_assembler import ContextAssembler
+from api.v1.db.db import (
     db_append_chat_turn,
     db_get_chat_history,
     db_get_profile,
     db_get_memories,
     db_add_memory,
 )
-from api.v1.engine import get_graph, make_thread_id, summarize_trimmed_turns
-from api.v1.memory_service import LANGMEM_AVAILABLE, get_langmem_manager
-from api.v1.prompt import DEFAULT_AMAZON_SYSTEM_PROMPT
+from api.v1.agent.engine import get_graph, make_thread_id, summarize_trimmed_turns
+from api.v1.memory.memory_service import LANGMEM_AVAILABLE, get_langmem_manager
+from api.v1.context.prompt import DEFAULT_AMAZON_SYSTEM_PROMPT
 from core.config import get_settings
 
 settings = get_settings()

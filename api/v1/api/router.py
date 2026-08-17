@@ -2,7 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from api.v1.db import (
+from api.v1.db.db import (
     db_get_all_threads,
     db_get_chat_history,
     db_upsert_profile,
@@ -10,8 +10,8 @@ from api.v1.db import (
     db_delete_session,
     db_delete_person,
 )
-from api.v1.memory_service import LANGMEM_AVAILABLE, get_langmem_manager
-from api.v1.schema import (
+from api.v1.memory.memory_service import LANGMEM_AVAILABLE, get_langmem_manager
+from api.v1.schema.schema import (
     ChatRequest,
     ChatResponse,
     ContextBuildRequest,
@@ -22,7 +22,7 @@ from api.v1.schema import (
     ProfileUpsertRequest,
     PromptBuildRequest,
 )
-from api.v1.services import (
+from api.v1.context.services import (
     invoke_context_engineering,
     process_chat_turn,
     get_profile,

@@ -2,7 +2,6 @@ import json
 import uuid
 from typing import List, Dict, Any
 
-import psycopg
 from psycopg.rows import dict_row
 from psycopg.sql import SQL, Identifier
 from psycopg_pool import ConnectionPool
@@ -31,50 +30,13 @@ def _get_conn():
     return pool.connection()
 
 
-def _ensure_chat_history_table(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS chat_history (
-            seq BIGSERIAL PRIMARY KEY,
-            id UUID UNIQUE NOT NULL,
-            person_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-
-
-def _ensure_profile_table(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS profiles (
-            id UUID PRIMARY KEY,
-            person_id TEXT NOT NULL UNIQUE,
-            profile_data JSONB NOT NULL DEFAULT '{}'::jsonb,
-            updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-
-
-def _ensure_memory_table(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS memories (
-            id UUID PRIMARY KEY,
-            person_id TEXT NOT NULL,
-            content TEXT NOT NULL,
-            memory_type TEXT NOT NULL DEFAULT 'general',
-            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
 
 
 def db_get_all_threads() -> List[str]:
     try:
         with _get_conn() as conn:
-            # Ensure required schema elements exist before querying
+            # Ensure LangGraph checkpoint schema is up-to-date
             _ensure_checkpoint_schema(conn)
-            _ensure_chat_history_table(conn)
 
             with conn.cursor() as cursor:
                 threads = set()
@@ -147,8 +109,6 @@ def db_delete_session(person_id: str, session_id: str) -> int:
     thread_id = f"{person_id}::{session_id}"
 
     with _get_conn() as conn:
-        _ensure_chat_history_table(conn)
-
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -184,10 +144,6 @@ def db_delete_person(person_id: str) -> int:
     prefix = f"{person_id}::"
 
     with _get_conn() as conn:
-        _ensure_chat_history_table(conn)
-        _ensure_profile_table(conn)
-        _ensure_memory_table(conn)
-
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -238,7 +194,6 @@ def db_delete_person(person_id: str) -> int:
 
 def db_append_chat_turn(person_id: str, session_id: str, user_query: str, ai_response: str):
     with _get_conn() as conn:
-        _ensure_chat_history_table(conn)
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -259,7 +214,6 @@ def db_append_chat_turn(person_id: str, session_id: str, user_query: str, ai_res
 
 def db_get_chat_history(person_id: str, session_id: str) -> List[Dict[str, str]]:
     with _get_conn() as conn:
-        _ensure_chat_history_table(conn)
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -276,7 +230,6 @@ def db_get_chat_history(person_id: str, session_id: str) -> List[Dict[str, str]]
 
 def db_upsert_profile(person_id: str, profile_data: Dict[str, Any]) -> Dict[str, Any]:
     with _get_conn() as conn:
-        _ensure_profile_table(conn)
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -289,12 +242,12 @@ def db_upsert_profile(person_id: str, profile_data: Dict[str, Any]) -> Dict[str,
                 (str(uuid.uuid4()), person_id, json.dumps(profile_data or {})),
             )
             row = cursor.fetchone()
+        conn.commit()
     return row["profile_data"] if row else {}
 
 
 def db_get_profile(person_id: str) -> Dict[str, Any]:
     with _get_conn() as conn:
-        _ensure_profile_table(conn)
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -310,7 +263,6 @@ def db_get_profile(person_id: str) -> Dict[str, Any]:
 
 def db_add_memory(person_id: str, content: str, memory_type: str = "general", metadata: Dict[str, Any] = None):
     with _get_conn() as conn:
-        _ensure_memory_table(conn)
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -324,7 +276,6 @@ def db_add_memory(person_id: str, content: str, memory_type: str = "general", me
 
 def db_get_memories(person_id: str, query: str = None, limit: int = 5) -> List[Dict[str, Any]]:
     with _get_conn() as conn:
-        _ensure_memory_table(conn)
         with conn.cursor() as cursor:
             if query:
                 cursor.execute(

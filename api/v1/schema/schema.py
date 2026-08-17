@@ -4,7 +4,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 from pydantic import BaseModel, Field
 
-from api.v1.prompt import DEFAULT_AMAZON_SYSTEM_PROMPT
+from api.v1.context.prompt import DEFAULT_AMAZON_SYSTEM_PROMPT
 
 
 class ChatRequest(BaseModel):

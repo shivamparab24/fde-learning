@@ -2,8 +2,8 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 from contextlib import asynccontextmanager
-from api.v1 import engine as engine_module
-from api.v1.router import router as api_router
+from api.v1.agent import engine as engine_module
+from api.v1.api.router import router as api_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
