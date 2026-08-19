@@ -115,8 +115,22 @@ def process_chat_turn(
     graph = get_graph()
 
     current_state = graph.get_state(config)
-    raw_history = current_state.values.get("messages", []) if current_state else []
-    existing_summary = current_state.values.get("summary", "") if current_state else ""
+    raw_history = current_state.values.get("messages", []) if current_state and current_state.values else []
+    existing_summary = current_state.values.get("summary", "") if current_state and current_state.values else ""
+
+    if not raw_history:
+        db_history = db_get_chat_history(person_id, session_id)
+        if db_history:
+            formatted_messages = [
+                HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
+                for m in db_history
+            ]
+            try:
+                graph.update_state(config, {"messages": formatted_messages})
+                current_state = graph.get_state(config)
+                raw_history = current_state.values.get("messages", []) if current_state and current_state.values else []
+            except Exception:
+                pass
 
     history_dicts = []
     for m in raw_history:

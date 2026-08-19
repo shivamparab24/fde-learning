@@ -39,6 +39,11 @@ router = APIRouter(tags=["Context Chat & State Management"])
 
 @router.post("/invoke", response_model=InvokeResponse, summary="Single entrypoint for context-engineered chat")
 def invoke_context_engineering_endpoint(req: InvokeRequest):
+    threads = db_get_all_threads()
+    existing_sessions = [t.split("::")[1] for t in threads if t.startswith(f"{req.person_id}::")]
+    if req.session_id in existing_sessions:
+        raise HTTPException(status_code=400, detail="Session name already exists.")
+
     result = invoke_context_engineering(
         person_id=req.person_id,
         session_id=req.session_id,
@@ -48,11 +53,14 @@ def invoke_context_engineering_endpoint(req: InvokeRequest):
     )
     return result
 
-    
-    
 
 @router.post("/chat/invoke", response_model=ChatResponse, summary="Invoke context-budgeted multi-turn chat")
 def invoke_chat(req: ChatRequest):
+    threads = db_get_all_threads()
+    existing_sessions = [t.split("::")[1] for t in threads if t.startswith(f"{req.person_id}::")]
+    if req.session_id in existing_sessions:
+        raise HTTPException(status_code=400, detail="Session name already exists.")
+
     response_text, telemetry = process_chat_turn(
         person_id=req.person_id,
         session_id=req.session_id,
@@ -140,32 +148,7 @@ def get_sessions(person_id: str):
     return {"person_id": person_id, "sessions": sessions}
 
 
-# @router.get("/chat/history/{person_id}/{session_id}")
-# def get_chat_history(person_id: str, session_id: str):
-#     messages = db_get_chat_history(person_id, session_id)
-#     thread_id = make_thread_id(person_id, session_id)
-#     config = {"configurable": {"thread_id": thread_id}}
-
-#     graph = get_graph()
-#     state = None
-#     try:
-#         state = graph.get_state(config)
-#     except Exception:
-#         state = None
-
-#     if not state or not getattr(state, "values", None):
-#         formatted_messages = [
-#             HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
-#             for m in messages
-#         ]
-#         try:
-#             graph.update_state(config, {"messages": formatted_messages})
-#         except Exception:
-#             pass
-
-#     return {"person_id": person_id, "session_id": session_id, "history": messages}
-
-@router.get("/chat/history/{person_id}/{session_id}")
+@router.get("/chat/history/{person_id}/{session_id}", summary="Get chat history for a session")
 def get_chat_history(person_id: str, session_id: str):
     messages = db_get_chat_history(person_id, session_id)
     return {"person_id": person_id, "session_id": session_id, "history": messages}

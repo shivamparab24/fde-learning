@@ -1,15 +1,20 @@
-import json
 import uuid
 from typing import List, Dict, Any
+from contextlib import contextmanager
 
 from psycopg.rows import dict_row
 from psycopg.sql import SQL, Identifier
 from psycopg_pool import ConnectionPool
 
+from sqlalchemy import cast, String
+from sqlalchemy.orm import sessionmaker
+from api.v1.models.session import get_engine
+from api.v1.models.models import ChatHistory, Profile, Memory
+
 from core.config import get_settings
 settings = get_settings()
 
-# initialize pool
+# initialize psycopg pool for LangGraph / checkpoint introspection
 conn_params = {
     "host": settings.postgres_host,
     "port": int(settings.postgres_port),
@@ -30,6 +35,21 @@ def _get_conn():
     return pool.connection()
 
 
+# initialize SQLAlchemy sessionmaker
+engine = get_engine()
+SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+@contextmanager
+def get_session():
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def db_get_all_threads() -> List[str]:
@@ -57,13 +77,11 @@ def db_get_all_threads() -> List[str]:
                         if row["thread_id"]:
                             threads.add(row["thread_id"])
 
-                cursor.execute("""
-                    SELECT DISTINCT person_id, session_id
-                    FROM chat_history
-                    WHERE person_id IS NOT NULL AND session_id IS NOT NULL;
-                """)
-                for row in cursor.fetchall():
-                    threads.add(f"{row['person_id']}::{row['session_id']}")
+        with get_session() as session:
+            rows = session.query(ChatHistory.person_id, ChatHistory.session_id).distinct().all()
+            for r in rows:
+                if r.person_id and r.session_id:
+                    threads.add(f"{r.person_id}::{r.session_id}")
 
         return sorted(threads)
     except Exception:
@@ -108,17 +126,15 @@ def db_delete_session(person_id: str, session_id: str) -> int:
     deleted_rows = 0
     thread_id = f"{person_id}::{session_id}"
 
+    with get_session() as session:
+        res = session.query(ChatHistory).filter(
+            ChatHistory.person_id == person_id,
+            ChatHistory.session_id == session_id
+        ).delete(synchronize_session=False)
+        deleted_rows += res
+
     with _get_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                DELETE FROM chat_history
-                WHERE person_id = %s AND session_id = %s
-                """,
-                (person_id, session_id),
-            )
-            deleted_rows += cursor.rowcount
-
             cursor.execute("""
                 SELECT table_name
                 FROM information_schema.columns
@@ -128,11 +144,12 @@ def db_delete_session(person_id: str, session_id: str) -> int:
             tables = [row["table_name"] for row in cursor.fetchall()]
 
             for table in tables:
-                query = SQL("DELETE FROM public.{} WHERE thread_id = %s").format(
-                    Identifier(table)
-                )
-                cursor.execute(query, (thread_id,))
-                deleted_rows += cursor.rowcount
+                if table != "chat_history":
+                    query = SQL("DELETE FROM public.{} WHERE thread_id = %s").format(
+                        Identifier(table)
+                    )
+                    cursor.execute(query, (thread_id,))
+                    deleted_rows += cursor.rowcount
 
         conn.commit()
 
@@ -143,35 +160,14 @@ def db_delete_person(person_id: str) -> int:
     deleted_rows = 0
     prefix = f"{person_id}::"
 
+    with get_session() as session:
+        res_chat = session.query(ChatHistory).filter(ChatHistory.person_id == person_id).delete(synchronize_session=False)
+        res_mem = session.query(Memory).filter(Memory.person_id == person_id).delete(synchronize_session=False)
+        res_prof = session.query(Profile).filter(Profile.person_id == person_id).delete(synchronize_session=False)
+        deleted_rows += (res_chat + res_mem + res_prof)
+
     with _get_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                DELETE FROM chat_history
-                WHERE person_id = %s
-                """,
-                (person_id,),
-            )
-            deleted_rows += cursor.rowcount
-
-            cursor.execute(
-                """
-                DELETE FROM memories
-                WHERE person_id = %s
-                """,
-                (person_id,),
-            )
-            deleted_rows += cursor.rowcount
-
-            cursor.execute(
-                """
-                DELETE FROM profiles
-                WHERE person_id = %s
-                """,
-                (person_id,),
-            )
-            deleted_rows += cursor.rowcount
-
             cursor.execute("""
                 SELECT table_name
                 FROM information_schema.columns
@@ -181,11 +177,12 @@ def db_delete_person(person_id: str) -> int:
             tables = [row["table_name"] for row in cursor.fetchall()]
 
             for table in tables:
-                query = SQL("DELETE FROM public.{} WHERE thread_id LIKE %s").format(
-                    Identifier(table)
-                )
-                cursor.execute(query, (f"{prefix}%",))
-                deleted_rows += cursor.rowcount
+                if table != "chat_history":
+                    query = SQL("DELETE FROM public.{} WHERE thread_id LIKE %s").format(
+                        Identifier(table)
+                    )
+                    cursor.execute(query, (f"{prefix}%",))
+                    deleted_rows += cursor.rowcount
 
         conn.commit()
 
@@ -193,124 +190,86 @@ def db_delete_person(person_id: str) -> int:
 
 
 def db_append_chat_turn(person_id: str, session_id: str, user_query: str, ai_response: str):
-    with _get_conn() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO chat_history (id, person_id, session_id, role, content)
-                VALUES (%s, %s, %s, 'user', %s)
-                """,
-                (str(uuid.uuid4()), person_id, session_id, user_query),
-            )
-            cursor.execute(
-                """
-                INSERT INTO chat_history (id, person_id, session_id, role, content)
-                VALUES (%s, %s, %s, 'assistant', %s)
-                """,
-                (str(uuid.uuid4()), person_id, session_id, ai_response),
-            )
-        conn.commit()
+    with get_session() as session:
+        user_turn = ChatHistory(
+            id=uuid.uuid4(),
+            person_id=person_id,
+            session_id=session_id,
+            role="user",
+            content=user_query
+        )
+        ai_turn = ChatHistory(
+            id=uuid.uuid4(),
+            person_id=person_id,
+            session_id=session_id,
+            role="assistant",
+            content=ai_response
+        )
+        session.add(user_turn)
+        session.add(ai_turn)
 
 
 def db_get_chat_history(person_id: str, session_id: str) -> List[Dict[str, str]]:
-    with _get_conn() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT role, content
-                FROM chat_history
-                WHERE person_id = %s AND session_id = %s
-                ORDER BY seq ASC;
-                """,
-                (person_id, session_id),
-            )
-            rows = cursor.fetchall()
-    return [{"role": row["role"], "content": row["content"]} for row in rows]
+    with get_session() as session:
+        rows = session.query(ChatHistory).filter(
+            ChatHistory.person_id == person_id,
+            ChatHistory.session_id == session_id
+        ).order_by(ChatHistory.seq.asc()).all()
+    return [{"role": row.role, "content": row.content} for row in rows]
 
 
 def db_upsert_profile(person_id: str, profile_data: Dict[str, Any]) -> Dict[str, Any]:
-    with _get_conn() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO profiles (id, person_id, profile_data, updated_at)
-                VALUES (%s, %s, %s::jsonb, CURRENT_TIMESTAMP)
-                ON CONFLICT (person_id)
-                DO UPDATE SET profile_data = EXCLUDED.profile_data, updated_at = CURRENT_TIMESTAMP
-                RETURNING profile_data;
-                """,
-                (str(uuid.uuid4()), person_id, json.dumps(profile_data or {})),
+    with get_session() as session:
+        profile = session.query(Profile).filter(Profile.person_id == person_id).first()
+        if profile:
+            profile.profile_data = profile_data or {}
+        else:
+            profile = Profile(
+                id=uuid.uuid4(),
+                person_id=person_id,
+                profile_data=profile_data or {}
             )
-            row = cursor.fetchone()
-        conn.commit()
-    return row["profile_data"] if row else {}
+            session.add(profile)
+        session.flush()
+        res_data = profile.profile_data
+    return res_data
 
 
 def db_get_profile(person_id: str) -> Dict[str, Any]:
-    with _get_conn() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT profile_data
-                FROM profiles
-                WHERE person_id = %s;
-                """,
-                (person_id,),
-            )
-            row = cursor.fetchone()
-    return row["profile_data"] if row else {}
+    with get_session() as session:
+        profile = session.query(Profile).filter(Profile.person_id == person_id).first()
+    return profile.profile_data if profile else {}
 
 
 def db_add_memory(person_id: str, content: str, memory_type: str = "general", metadata: Dict[str, Any] = None):
-    with _get_conn() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO memories (id, person_id, content, memory_type, metadata)
-                VALUES (%s, %s, %s, %s, %s::jsonb);
-                """,
-                (str(uuid.uuid4()), person_id, content, memory_type, json.dumps(metadata or {})),
-            )
-        conn.commit()
+    with get_session() as session:
+        memory = Memory(
+            id=uuid.uuid4(),
+            person_id=person_id,
+            content=content,
+            memory_type=memory_type,
+            metadata_=metadata or {}
+        )
+        session.add(memory)
 
 
 def db_get_memories(person_id: str, query: str = None, limit: int = 5) -> List[Dict[str, Any]]:
-    with _get_conn() as conn:
-        with conn.cursor() as cursor:
-            if query:
-                cursor.execute(
-                    """
-                    SELECT content, memory_type, metadata, created_at
-                    FROM memories
-                    WHERE person_id = %s
-                      AND (
-                          content ILIKE %s
-                          OR metadata::text ILIKE %s
-                      )
-                    ORDER BY created_at DESC
-                    LIMIT %s;
-                    """,
-                    (person_id, f"%{query}%", f"%{query}%", limit),
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT content, memory_type, metadata, created_at
-                    FROM memories
-                    WHERE person_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT %s;
-                    """,
-                    (person_id, limit),
-                )
-            rows = cursor.fetchall()
+    with get_session() as session:
+        q = session.query(Memory).filter(Memory.person_id == person_id)
+        if query:
+            search = f"%{query}%"
+            q = q.filter(
+                (Memory.content.ilike(search)) |
+                (cast(Memory.metadata_, String).ilike(search))
+            )
+        rows = q.order_by(Memory.created_at.desc()).limit(limit).all()
 
     return [
         {
-            "content": row["content"],
-            "memory_type": row["memory_type"],
-            "metadata": row["metadata"] or {},
-            "created_at": row["created_at"],
+            "content": row.content,
+            "memory_type": row.memory_type,
+            "metadata": row.metadata_ or {},
+            "created_at": row.created_at,
         }
         for row in rows
     ]
@@ -337,3 +296,4 @@ def _ensure_checkpoint_schema(conn):
                 cursor.execute("DROP TABLE IF EXISTS checkpoint_writes CASCADE;")
                 cursor.execute("DROP TABLE IF EXISTS checkpoint_migrations CASCADE;")
     conn.commit()
+    
