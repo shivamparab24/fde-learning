@@ -24,6 +24,7 @@ class ChatResponse(BaseModel):
 
 class GraphState(TypedDict, total=False):
     messages: Annotated[List[BaseMessage], add_messages]
+    turn_input: List[BaseMessage]
     summary: str
     
     
@@ -35,6 +36,8 @@ class MemoryCreateRequest(BaseModel):
     content: str
     memory_type: str = "general"
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    expires_in_days: Optional[int] = Field(default=None, ge=1, description="TTL in days; omit for no expiry")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class ContextBuildRequest(BaseModel):
@@ -75,3 +78,19 @@ class InvokeResponse(BaseModel):
     prompt: str
     response: str
     telemetry: Dict[str, Any]
+    
+
+class UserProfile(BaseModel):
+    """User preferences, account details, and support background."""
+    content: str
+    preferred_name: Optional[str] = None
+    prime_member: Optional[bool] = None
+    preferences: List[str] = []
+
+
+class CustomerTicketFact(BaseModel):
+    """Key facts about orders, refunds, delays, and product issues."""
+    content: str
+    order_id: Optional[str] = None
+    issue_type: Optional[str] = None
+    status: Optional[str] = None

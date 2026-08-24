@@ -1,18 +1,22 @@
 import uuid
-from typing import List, Dict, Any
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Any, Optional, Tuple
 from contextlib import contextmanager
 
 from psycopg.rows import dict_row
 from psycopg.sql import SQL, Identifier
 from psycopg_pool import ConnectionPool
 
-from sqlalchemy import cast, String
+from sqlalchemy import cast, String, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import sessionmaker
 from api.v1.models.session import get_engine
-from api.v1.models.models import ChatHistory, Profile, Memory
+from api.v1.models.models import ChatHistory, Person, Profile, Memory, SessionSummary
 
 from core.config import get_settings
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 # initialize psycopg pool for LangGraph / checkpoint introspection
 conn_params = {
@@ -52,30 +56,28 @@ def get_session():
         session.close()
 
 
+def _ensure_person(session, person_id: str):
+    """Idempotently anchor a person row (parent of all FK-cascade children) in the caller's transaction."""
+    stmt = pg_insert(Person).values(person_id=person_id).on_conflict_do_nothing(
+        index_elements=[Person.person_id]
+    )
+    session.execute(stmt)
+
+
 def db_get_all_threads() -> List[str]:
     try:
         with _get_conn() as conn:
-            # Ensure LangGraph checkpoint schema is up-to-date
-            _ensure_checkpoint_schema(conn)
+            threads = set()
 
             with conn.cursor() as cursor:
-                threads = set()
-
-                # Guard check: query checkpoints only if table actually exists
                 cursor.execute("""
-                    SELECT 1 
-                    FROM information_schema.tables 
-                    WHERE table_schema = 'public' AND table_name = 'checkpoints';
+                    SELECT DISTINCT thread_id
+                    FROM checkpoints
+                    WHERE thread_id IS NOT NULL;
                 """)
-                if cursor.fetchone():
-                    cursor.execute("""
-                        SELECT DISTINCT thread_id
-                        FROM checkpoints
-                        WHERE thread_id IS NOT NULL;
-                    """)
-                    for row in cursor.fetchall():
-                        if row["thread_id"]:
-                            threads.add(row["thread_id"])
+                for row in cursor.fetchall():
+                    if row["thread_id"]:
+                        threads.add(row["thread_id"])
 
         with get_session() as session:
             rows = session.query(ChatHistory.person_id, ChatHistory.session_id).distinct().all()
@@ -84,7 +86,8 @@ def db_get_all_threads() -> List[str]:
                     threads.add(f"{r.person_id}::{r.session_id}")
 
         return sorted(threads)
-    except Exception:
+    except Exception as e:
+        logger.warning("db_get_all_threads failed: %s", e)
         return []
 
 
@@ -133,6 +136,12 @@ def db_delete_session(person_id: str, session_id: str) -> int:
         ).delete(synchronize_session=False)
         deleted_rows += res
 
+        res_sum = session.query(SessionSummary).filter(
+            SessionSummary.person_id == person_id,
+            SessionSummary.session_id == session_id
+        ).delete(synchronize_session=False)
+        deleted_rows += res_sum
+
     with _get_conn() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
@@ -164,7 +173,8 @@ def db_delete_person(person_id: str) -> int:
         res_chat = session.query(ChatHistory).filter(ChatHistory.person_id == person_id).delete(synchronize_session=False)
         res_mem = session.query(Memory).filter(Memory.person_id == person_id).delete(synchronize_session=False)
         res_prof = session.query(Profile).filter(Profile.person_id == person_id).delete(synchronize_session=False)
-        deleted_rows += (res_chat + res_mem + res_prof)
+        res_pers = session.query(Person).filter(Person.person_id == person_id).delete(synchronize_session=False)
+        deleted_rows += (res_chat + res_mem + res_prof + res_pers)
 
     with _get_conn() as conn:
         with conn.cursor() as cursor:
@@ -191,6 +201,7 @@ def db_delete_person(person_id: str) -> int:
 
 def db_append_chat_turn(person_id: str, session_id: str, user_query: str, ai_response: str):
     with get_session() as session:
+        _ensure_person(session, person_id)
         user_turn = ChatHistory(
             id=uuid.uuid4(),
             person_id=person_id,
@@ -220,6 +231,7 @@ def db_get_chat_history(person_id: str, session_id: str) -> List[Dict[str, str]]
 
 def db_upsert_profile(person_id: str, profile_data: Dict[str, Any]) -> Dict[str, Any]:
     with get_session() as session:
+        _ensure_person(session, person_id)
         profile = session.query(Profile).filter(Profile.person_id == person_id).first()
         if profile:
             profile.profile_data = profile_data or {}
@@ -241,27 +253,43 @@ def db_get_profile(person_id: str) -> Dict[str, Any]:
     return profile.profile_data if profile else {}
 
 
-def db_add_memory(person_id: str, content: str, memory_type: str = "general", metadata: Dict[str, Any] = None):
+def db_add_memory(
+    person_id: str,
+    content: str,
+    memory_type: str = "general",
+    metadata: Dict[str, Any] = None,
+    expires_at: Optional[datetime] = None,
+    confidence: float = 1.0,
+):
     with get_session() as session:
+        _ensure_person(session, person_id)
         memory = Memory(
             id=uuid.uuid4(),
             person_id=person_id,
             content=content,
             memory_type=memory_type,
-            metadata_=metadata or {}
+            metadata_=metadata or {},
+            expires_at=expires_at,
+            confidence=confidence,
         )
         session.add(memory)
 
 
-def db_get_memories(person_id: str, query: str = None, limit: int = 5) -> List[Dict[str, Any]]:
+def db_get_memories(person_id: str, query: str = None, limit: int = 5, max_age_days: int = None) -> List[Dict[str, Any]]:
+    now = datetime.now(timezone.utc)
     with get_session() as session:
         q = session.query(Memory).filter(Memory.person_id == person_id)
+        # Poisoning safeguard: never surface expired memories.
+        q = q.filter((Memory.expires_at.is_(None)) | (Memory.expires_at > now))
         if query:
             search = f"%{query}%"
             q = q.filter(
                 (Memory.content.ilike(search)) |
                 (cast(Memory.metadata_, String).ilike(search))
             )
+        if max_age_days is not None:
+            cutoff = now - timedelta(days=max_age_days)
+            q = q.filter(Memory.created_at >= cutoff)
         rows = q.order_by(Memory.created_at.desc()).limit(limit).all()
 
     return [
@@ -270,30 +298,116 @@ def db_get_memories(person_id: str, query: str = None, limit: int = 5) -> List[D
             "memory_type": row.memory_type,
             "metadata": row.metadata_ or {},
             "created_at": row.created_at,
+            "expires_at": row.expires_at,
+            "confidence": float(row.confidence) if row.confidence is not None else 1.0,
         }
         for row in rows
     ]
 
 
-def _ensure_checkpoint_schema(conn):
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            SELECT 1
-            FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = 'checkpoint_blobs';
-        """)
-        blobs_exists = cursor.fetchone()
-        if blobs_exists:
-            cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = 'checkpoint_blobs' AND column_name = 'version';
-            """)
-            has_version = cursor.fetchone()
-            if not has_version:
-                cursor.execute("DROP TABLE IF EXISTS checkpoint_blobs CASCADE;")
-                cursor.execute("DROP TABLE IF EXISTS checkpoints CASCADE;")
-                cursor.execute("DROP TABLE IF EXISTS checkpoint_writes CASCADE;")
-                cursor.execute("DROP TABLE IF EXISTS checkpoint_migrations CASCADE;")
-    conn.commit()
-    
+def db_purge_expired_memories(person_id: str = None) -> int:
+    """Deletes memories whose expires_at has passed. Optionally scoped to one person."""
+    now = datetime.now(timezone.utc)
+    with get_session() as session:
+        q = session.query(Memory).filter(Memory.expires_at.isnot(None), Memory.expires_at <= now)
+        if person_id:
+            q = q.filter(Memory.person_id == person_id)
+        return q.delete(synchronize_session=False)
+
+
+# ---------------- Episodic summary blocks ----------------
+
+def db_count_session_turns(person_id: str, session_id: str) -> int:
+    """A 'turn' is one user message (assistant reply is part of the same turn)."""
+    with get_session() as session:
+        count = session.query(func.count(ChatHistory.seq)).filter(
+            ChatHistory.person_id == person_id,
+            ChatHistory.session_id == session_id,
+            ChatHistory.role == "user",
+        ).scalar()
+    return int(count or 0)
+
+
+def db_get_window_messages(person_id: str, session_id: str, num_turns: int) -> Tuple[List[Dict[str, str]], Optional[int], Optional[int]]:
+    """
+    Returns (messages, start_seq, end_seq) for the most recent `num_turns` turns.
+    Messages are ordered oldest-first with role/content keys; seq bounds span the window.
+    """
+    fetch = max(1, num_turns) * 2
+    with get_session() as session:
+        rows = (
+            session.query(ChatHistory)
+            .filter(ChatHistory.person_id == person_id, ChatHistory.session_id == session_id)
+            .order_by(ChatHistory.seq.desc())
+            .limit(fetch)
+            .all()
+        )
+    rows = list(reversed(rows))
+    if not rows:
+        return [], None, None
+    messages = [{"role": r.role, "content": r.content} for r in rows]
+    return messages, rows[0].seq, rows[-1].seq
+
+
+def db_store_summary_block(
+    person_id: str,
+    session_id: str,
+    window_index: int,
+    content: str,
+    start_seq: Optional[int] = None,
+    end_seq: Optional[int] = None,
+) -> bool:
+    """Idempotent insert of an immutable episode block. Returns True when a new row was created."""
+    if not content.strip():
+        return False
+    with get_session() as session:
+        _ensure_person(session, person_id)
+        stmt = (
+            pg_insert(SessionSummary)
+            .values(
+                id=uuid.uuid4(),
+                person_id=person_id,
+                session_id=session_id,
+                window_index=window_index,
+                start_seq=start_seq,
+                end_seq=end_seq,
+                content=content.strip(),
+            )
+            .on_conflict_do_nothing(constraint="uq_session_summary_window")
+        )
+        result = session.execute(stmt)
+        return bool(result.rowcount)
+
+
+def db_get_summary_blocks(person_id: str, session_id: str) -> List[Dict[str, Any]]:
+    """All episode blocks for the session, oldest-first."""
+    with get_session() as session:
+        rows = (
+            session.query(SessionSummary)
+            .filter(SessionSummary.person_id == person_id, SessionSummary.session_id == session_id)
+            .order_by(SessionSummary.window_index.asc())
+            .all()
+        )
+    return [
+        {
+            "window_index": r.window_index,
+            "start_seq": r.start_seq,
+            "end_seq": r.end_seq,
+            "content": r.content,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
+
+
+def db_get_messages_after_seq(person_id: str, session_id: str, after_seq: Optional[int]) -> List[Dict[str, str]]:
+    """Raw conversation tail that is not yet covered by any episode block."""
+    with get_session() as session:
+        q = session.query(ChatHistory).filter(
+            ChatHistory.person_id == person_id,
+            ChatHistory.session_id == session_id,
+        )
+        if after_seq is not None:
+            q = q.filter(ChatHistory.seq > after_seq)
+        rows = q.order_by(ChatHistory.seq.asc()).all()
+    return [{"role": r.role, "content": r.content} for r in rows]

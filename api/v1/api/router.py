@@ -1,6 +1,7 @@
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from api.v1.db.db import (
     db_get_all_threads,
@@ -9,6 +10,8 @@ from api.v1.db.db import (
     db_add_memory,
     db_delete_session,
     db_delete_person,
+    db_get_summary_blocks,
+    db_purge_expired_memories,
 )
 from api.v1.memory.memory_service import LANGMEM_AVAILABLE, get_langmem_manager
 from api.v1.schema.schema import (
@@ -38,36 +41,34 @@ router = APIRouter(tags=["Context Chat & State Management"])
 
 
 @router.post("/invoke", response_model=InvokeResponse, summary="Single entrypoint for context-engineered chat")
-def invoke_context_engineering_endpoint(req: InvokeRequest):
-    threads = db_get_all_threads()
-    existing_sessions = [t.split("::")[1] for t in threads if t.startswith(f"{req.person_id}::")]
-    if req.session_id in existing_sessions:
-        raise HTTPException(status_code=400, detail="Session name already exists.")
-
-    result = invoke_context_engineering(
-        person_id=req.person_id,
-        session_id=req.session_id,
-        system_prompt=req.system_prompt,
-        user_query=req.user_query,
-        retrieved_docs=req.retrieved_docs,
-    )
+def invoke_context_engineering_endpoint(req: InvokeRequest, background_tasks: BackgroundTasks):
+    try:
+        result = invoke_context_engineering(
+            person_id=req.person_id,
+            session_id=req.session_id,
+            system_prompt=req.system_prompt,
+            user_query=req.user_query,
+            retrieved_docs=req.retrieved_docs,
+            background_tasks=background_tasks,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     return result
 
 
 @router.post("/chat/invoke", response_model=ChatResponse, summary="Invoke context-budgeted multi-turn chat")
-def invoke_chat(req: ChatRequest):
-    threads = db_get_all_threads()
-    existing_sessions = [t.split("::")[1] for t in threads if t.startswith(f"{req.person_id}::")]
-    if req.session_id in existing_sessions:
-        raise HTTPException(status_code=400, detail="Session name already exists.")
-
-    response_text, telemetry = process_chat_turn(
-        person_id=req.person_id,
-        session_id=req.session_id,
-        system_prompt=req.system_prompt,
-        user_query=req.user_query,
-        retrieved_docs=req.retrieved_docs
-    )
+def invoke_chat(req: ChatRequest, background_tasks: BackgroundTasks):
+    try:
+        response_text, telemetry, _context, _prompt = process_chat_turn(
+            person_id=req.person_id,
+            session_id=req.session_id,
+            system_prompt=req.system_prompt,
+            user_query=req.user_query,
+            retrieved_docs=req.retrieved_docs,
+            background_tasks=background_tasks,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
 
     return ChatResponse(
         person_id=req.person_id,
@@ -93,15 +94,30 @@ def upsert_profile_endpoint(person_id: str, payload: ProfileUpsertRequest):
 
 @router.post("/memories/{person_id}", summary="Store a new memory for a person")
 def create_memory_endpoint(person_id: str, payload: MemoryCreateRequest):
+    expires_at = None
+    if payload.expires_in_days:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days)
+
     if LANGMEM_AVAILABLE:
         langmem = get_langmem_manager()
         langmem.add_memory(
-            person_id=person_id, 
-            messages=[{"role": "user", "content": payload.content}], 
-            metadata=payload.metadata
+            person_id=person_id,
+            messages=[{"role": "user", "content": payload.content}],
+            metadata=payload.metadata,
+            expires_in_days=payload.expires_in_days,
+            confidence=payload.confidence,
         )
-    db_add_memory(person_id, payload.content, payload.memory_type, payload.metadata)
-    return {"person_id": person_id, "status": "stored", "engine": "langmem" if LANGMEM_AVAILABLE else "postgres"}
+    db_add_memory(
+        person_id, payload.content, payload.memory_type, payload.metadata,
+        expires_at=expires_at, confidence=payload.confidence,
+    )
+    return {
+        "person_id": person_id,
+        "status": "stored",
+        "engine": "langmem" if LANGMEM_AVAILABLE else "postgres",
+        "expires_at": expires_at.isoformat() if expires_at else None,
+        "confidence": payload.confidence,
+    }
 
 
 @router.get("/memories/{person_id}", summary="Get relevant memories for a person")
@@ -154,6 +170,28 @@ def get_chat_history(person_id: str, session_id: str):
     return {"person_id": person_id, "session_id": session_id, "history": messages}
 
 
+@router.get("/sessions/{person_id}/{session_id}/summaries", summary="Inspect episodic summary blocks for a session")
+def get_session_summaries(person_id: str, session_id: str):
+    blocks = db_get_summary_blocks(person_id, session_id)
+    return {
+        "person_id": person_id,
+        "session_id": session_id,
+        "block_count": len(blocks),
+        "blocks": blocks,
+    }
+
+
+@router.post("/maintenance/purge-expired-memories", summary="Delete expired memories (poisoning safeguard sweep)")
+def purge_expired_memories(person_id: Optional[str] = None):
+    purged = db_purge_expired_memories(person_id)
+    return {
+        "status": "purged",
+        "purged_rows": purged,
+        "person_id": person_id,
+        "note": "LangMem items are filtered (not deleted) at retrieval time via expires_at metadata.",
+    }
+
+
 @router.delete("/session/{person_id}/{session_id}", summary="Delete a specific session")
 def delete_session(person_id: str, session_id: str):
     deleted_count = db_delete_session(person_id, session_id)
@@ -165,6 +203,15 @@ def delete_session(person_id: str, session_id: str):
 @router.delete("/person/{person_id}", summary="Delete all records for a person_id")
 def delete_person(person_id: str):
     deleted_count = db_delete_person(person_id)
-    if deleted_count == 0:
+
+    langmem_deleted = 0
+    if LANGMEM_AVAILABLE:
+        langmem_deleted = get_langmem_manager().delete_person_memories(person_id)
+
+    if deleted_count == 0 and langmem_deleted == 0:
         raise HTTPException(status_code=404, detail="Person ID not found.")
-    return {"status": "deleted", "deleted_rows": deleted_count}
+    return {
+        "status": "deleted",
+        "deleted_rows": deleted_count,
+        "langmem_memories_deleted": langmem_deleted,
+    }

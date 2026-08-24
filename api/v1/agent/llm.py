@@ -18,7 +18,8 @@ def get_llm():
         groq_api_key=settings.groq_api_key,
         model_name=settings.groq_model_name,
         temperature=0.7,   
-        reasoning_format='hidden' 
+        reasoning_format='hidden',
+        reasoning_effort="default",
     )
 
     return _llm
