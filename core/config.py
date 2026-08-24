@@ -3,6 +3,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    
+    model_config = SettingsConfigDict(
+        env_file=".env"
+    )
 
     #environment variables
     ollama_base_url: str
@@ -20,10 +24,9 @@ class Settings(BaseSettings):
     postgres_db: str
     postgres_user: str
     postgres_password: str
-
-    model_config = SettingsConfigDict(
-        env_file=".env"
-    )
+    
+    embedding_model_name: str
+    embedding_dims: int
 
 
 @lru_cache()

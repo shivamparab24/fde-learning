@@ -1,0 +1,1 @@
+python -m alembic -c api\v1\migrations\alembic.ini upgrade head
